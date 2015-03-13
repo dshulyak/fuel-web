@@ -8,6 +8,10 @@ from nailgun.orchestrator import deployment_graph
 from nailgun.settings import settings
 from nailgun import objects
 
+
+CWD = '/var/www/nailgun/deployments/'
+
+
 def puppet(task):
     return {
         'shell':
@@ -37,9 +41,9 @@ def pre_serialize(task, cluster):
     if task['id'] == 'upload_core_repos':
         task['parameters']['data'] = "deb http://10.109.10.2:8080/2014.2-6.1/ubuntu/x86_64 trusty main"
     elif 'parameters' in task:
-        context = {MASTER_IP=settings.MASTER_IP,
-                   OPENSTACK_VERSION=cluster.release.version,
-                   CLUSTER_ID=cluster.uid}
+        context = {'MASTER_IP': settings.MASTER_IP,
+                   'OPENSTACK_VERSION': cluster.release.version,
+                   'CLUSTER_ID': cluster.uid}
         params = yaml.dump(task['parameters'])
         task['parameters'] = yaml.load(params.format(**context))
 
@@ -57,61 +61,76 @@ def serialize(task):
         return upload_file(task)
 
 
-class AnsibleSerializer(object):
-
-    def __init__(self, cluster):
-        self.cluster = cluster
-        tasks = objects.Cluster.get_deployment_tasks(cluster)
-        self.graph = deployment_graph.DeploymentGrap(tasks=tasks)
-
-    def build(self):
-        for task in self.graph.find_subgraph(end='deploy_start').topology:
-            yield self.build_playbook(
-                task['id']+'_playbook', [task], task['role'])
-
-        for group in self.graph.get_groups_subgraph().topology:
-            group_tasks = self.graph.get_tasks(group['id']).topology
-            yield self.build_playbook(
-                group['id'], group_tasks, group['role'])
-
-        for task in self.graph.find_subgraph(start='deploy_end').topology:
-            yield self.build_playbook(
-                task['id']+'_playbook', [task], task['role'])
-
-    def build_playbook(self, name, tasks, roles):
-        if roles == '*':
-            hosts = 'all'
-        elif roles == 'master':
-            hosts = 'localhost'
-        else:
-            hosts = roles
-        serialized = []
-        for t in tasks:
-            pre_serialize(t, self.cluster):
-            stask = serialize(t)
-            if stask:
-                serialized.append(stask)
-        return {
-            'hosts': hosts,
-            'name': name,
-            'tasks': serialized
-            }
+def async_status(name):
+    return {
+        'async_status': 'jid={{ {name}.ansible_job_id }}'.format(name=name),
+        'register': 'job',
+        'until': 'job.finished',
+        'retries': '1600'}
 
 
-def create_playbook(cluster):
-    ansible = AnsibleSerializer(cluster)
-    cwd = '/var/www/nailgun/cluster{0}/'.format(cluster.uid)
-    main = []
-    for playbook in ansible.build():
-        full_path = os.path.join(cwd, playbook['name'] + '.yml')
-        with open(full_path, 'w') as f:
-            f.write(yaml.safe_dump(playbook, default_flow_style=False))
-        main.append({'include': full_path})
+def async_play(name, full_path, requires):
+    if requires:
+        for require in requires:
+            yield async_status(require)
 
-    main_full_path = os.path.join(cwd, 'main.yml')
-    with open(main_full_path, 'w') as f:
-        f.write(yaml.safe_dump(main, default_flow_style=False))
+    yield  {'shell': 'ansible-playbook {0}'.format(full_path),
+            'register': name,
+            'async': 3600,
+            'poll': 0}
+
+
+
+def playbook(name, tasks, roles):
+
+    if roles == '*':
+        hosts = 'all'
+    elif roles == 'master':
+        hosts = 'localhost'
+    else:
+        hosts = roles
+
+    serialized = []
+    for t in tasks:
+        # pre_serialize(t, self.cluster)
+        stask = serialize(t)
+        if stask:
+            serialized.append(stask)
+
+    return {
+        'hosts': hosts,
+        'name': name,
+        'tasks': serialized
+        }
+
+
+def write_data(name, data):
+    full_path = os.path.join(CWD, name + '.yml')
+    with open(full_path, 'w') as f:
+        f.write(yaml.safe_dump(data, default_flow_style=False))
+
+
+def create_playbook(name, tasks, hosts):
+    play = playbook(name, tasks, hosts)
+
+    write_data(name, [play])
+    return os.path.join(CWD, name + '.yml')
+
+
+def prepare(cluster):
+
+    graph = deployment_graph.DeploymentGraph(
+        tasks=objects.Cluster.get_deployment_tasks(cluster))
+    main_tasks = []
+    for group in self.graph.get_groups_subgraph().topology:
+        group_tasks = self.graph.get_tasks(group['id']).topology
+        path = create_playbook(group['id'], group_tasks, group['role'])
+
+        main_tasks.append([{'include': path}])
+
+    write_data('groups', main_tasks)
+
 
 def main():
     cluster = objects.Cluster.get_by_uid(sys.argv[1])
-    create_playbook(cluster)
+    prepare(cluster)
