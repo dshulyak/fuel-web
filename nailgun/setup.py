@@ -72,6 +72,7 @@ if __name__ == "__main__":
                   'oswl_collectord = nailgun.statistics.oswl_collector:run',
                   ('oswl_cleaner = nailgun.statistics.utils:'
                    'delete_expired_oswl_entries'),
+                  'ansible_prepare = nailgun.orchestrator.ansible_serializer:main',
               ],
               'nose.plugins.0.10': [
                   'db = nailgun.test.db_plugin:DbPlugin'
