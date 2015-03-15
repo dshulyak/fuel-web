@@ -1043,3 +1043,36 @@ class NailgunReceiver(object):
             data = {'status': status, 'progress': progress,
                     'message': '/dump/{0}'.format(dumpfile)}
             objects.Task.update(task, data)
+
+    @classmethod
+    def on_host_failed(cls, **kwargs):
+        task_uuid = kwargs.get('task_uuid')
+        host = kwargs.get('host_uuid')
+        status = kwargs.get('status')
+        fail_on_error = kwargs.get('fail_on_error')
+
+        node = objects.Node.get_by_uid(host)
+        node.status = 'error'
+
+        if fail_on_error:
+
+            node.cluster.status = 'error'
+            task = objects.Task.get_by_uid(task_uuid)
+            task.status = 'error'
+
+    @classmethod
+    def on_host_success(cls, **kwargs):
+        task_uuid = kwargs.get('task_uuid')
+        host = kwargs.get('host_uuid')
+        task = kwargs.get('task')
+
+        # only progress should be updated
+
+    @classmethod
+    def on_finished(cls, **kwargs):
+        task_uuid = kwargs.get('task_uuid')
+        status = kwargs.get('status')
+
+        task = objects.Task.get_by_uid(task_uuid)
+        task.status = status
+        task.cluster.status = status
